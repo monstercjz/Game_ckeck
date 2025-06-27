@@ -1,2 +1,5 @@
 /monitor.log
 /stuck_screenshots
+/build
+/dist
+/monitor.spec

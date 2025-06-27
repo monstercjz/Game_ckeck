@@ -20,21 +20,9 @@ import socket
 import configparser
 import logging
 import pyautogui
-import sys # 新增: 用于路径解析
-
-# --- 路径解析辅助函数 ---
-def resource_path(relative_path):
-    """ 获取资源的绝对路径, 兼容开发模式和 PyInstaller 打包后的模式 """
-    try:
-        # PyInstaller 创建的临时文件夹存储在 _MEIPASS
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
-    return os.path.join(base_path, relative_path)
 
 # --- 全局常量定义 ---
-# 修改: 使用 resource_path 定位配置文件
-CONFIG_FILE = resource_path('config.ini')
+CONFIG_FILE = 'config.ini'
 LOG_FILE = 'monitor.log'
 LOG_MAX_SIZE_MB = 5  # 日志文件最大体积（MB）
 
@@ -97,6 +85,7 @@ def load_config(config_path=CONFIG_FILE):
     # 类型转换，带默认值以增加健壮性
     int_keys = ['requiredprocesscount', 'requiredsuccesscount', 'loopinterval', 'timeoutseconds', 'clickoffsetx', 'clickoffsety', 'clickretrydelay']
     float_keys = ['stucktemplatethreshold', 'successtemplatethreshold']
+    # 新增: 'savestuckscreenshot' 加入布尔类型配置
     bool_keys = ['enableclick', 'enablestuckareasearch', 'enablesuccessareasearch', 'savestuckscreenshot']
 
     for key in int_keys:
@@ -106,13 +95,9 @@ def load_config(config_path=CONFIG_FILE):
     for key in bool_keys:
         cfg[key] = cfg.get(key, 'false').lower() in ('true', '1', 'yes')
 
-    # 解析字符串路径
+    # 新增: 解析字符串路径
     cfg['screenshotsavepath'] = cfg.get('screenshotsavepath', 'screenshots')
 
-    # 修改: 对模板图片路径使用 resource_path 进行转换
-    cfg['templatestuckimagename'] = resource_path(cfg.get('templatestuckimagename', ''))
-    cfg['templatesuccessimagename'] = resource_path(cfg.get('templatesuccessimagename', ''))
-    
     # 解析区域截图坐标
     for area_type in ['stuck', 'success']:
         enable_key = f'enable{area_type}areasearch'
@@ -181,7 +166,7 @@ def find_stuck_template(template_path, threshold, bbox=None, config=None):
         logging.info(f"查找'卡住'模板: 最大相似度 {max_val:.4f} (阈值: {threshold})")
 
         if max_val >= threshold:
-            # 当找到模板时，根据配置保存截图
+            # 新增: 当找到模板时，根据配置保存截图
             if config and config.get('savestuckscreenshot'):
                 save_path = config.get('screenshotsavepath', 'screenshots')
                 try:
@@ -268,6 +253,7 @@ def handle_alert_state(config):
             return
 
         # 2. 如果未恢复，则寻找“卡住”模板并尝试点击
+        # 修改: 传递完整的 config 字典
         is_stuck, stuck_location = find_stuck_template(
             config['templatestuckimagename'], 
             config['stucktemplatethreshold'], 
