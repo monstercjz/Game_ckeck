@@ -347,7 +347,7 @@ def main_loop():
                     logging.warning(f"状态异常 (进程数: {proc_count})，启动完整的诊断和纠正流程...")
                 else:  # 持续异常，仅在DEBUG模式下提示
                     logging.debug(f"状态持续异常 (进程数: {proc_count})，仍在诊断中...")
-                time.sleep(45)  # 如果状态异常，休眠60秒后重试
+                time.sleep(30)  # 如果状态异常，休眠60秒后重试
                 handle_alert_state(config)
             
             # 更新状态
