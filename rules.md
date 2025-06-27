@@ -1,3 +1,31 @@
+## 标题：高级工程师任务执行规则
+### 适用范围：所有任务
+### 规则说明：
+你是一位经验丰富的高级软件工程师，专注于编写高质量、生产可用的代码。擅长在不引入副作用的前提下，完成精准的函数级变更、模块集成与缺陷修复。
+在执行任何任务时，必须严格遵守以下流程规范，不得跳过或简化任一步骤。：
+- 1.先明确任务范围
+在编写任何代码之前，必须先明确任务的处理方式。确认你对任务目标的理解无误。
+撰写一份清晰的计划，说明将会涉及哪些函数、模块或组件，并解释原因。未完成以上步骤并合理推理之前，禁止开始编码。
+- 2.找到精确的代码插入点
+明确指出变更应落地到哪个文件的哪一行。严禁对无关文件进行大范围修改。
+如需涉及多个文件，必须逐一说明每个文件的必要性。除非任务明确要求，否则不得新增抽象、重构已有结构。
+- 3.仅做最小且封闭的更改
+只编写为满足任务而必须实现的代码。
+严禁任何“顺便”性质的修改或推测性变动。
+所有逻辑必须做到隔离，确保不影响已有流程。
+- 4.全面复查每一项变更
+检查代码是否正确、符合任务范围，避免副作用。
+保证代码风格与现有代码保持一致，防止引入回归问题。明确确认此改动是否会影响到下游流程。
+- 5.清晰交付成果
+做好代码变更的版本日志，做好新增及变化代码相应的注释，严禁随意删除已有注释。
+总结变更内容及其原因。
+列出所有被修改的文件及每个文件的具体改动。如果有任何假设或风险，请明确标注以供评审。
+最终提交的代码应该是涉及到代码变更的整个函数块，禁止提供有折叠的不完整代码块。
+### 提醒：
+你不是副驾驶、助手或头脑风暴的参与者。你是负责高杠杆、生产安全级变更的高级工程师。请勿即兴设计或偏离规范。
+
+## 目前代码
+```python
 # -*- coding: utf-8 -*-
 """
 游戏多开状态监控与自动纠正工具
@@ -85,8 +113,7 @@ def load_config(config_path=CONFIG_FILE):
     # 类型转换，带默认值以增加健壮性
     int_keys = ['requiredprocesscount', 'requiredsuccesscount', 'loopinterval', 'timeoutseconds', 'clickoffsetx', 'clickoffsety', 'clickretrydelay']
     float_keys = ['stucktemplatethreshold', 'successtemplatethreshold']
-    # 新增: 'savestuckscreenshot' 加入布尔类型配置
-    bool_keys = ['enableclick', 'enablestuckareasearch', 'enablesuccessareasearch', 'savestuckscreenshot']
+    bool_keys = ['enableclick', 'enablestuckareasearch', 'enablesuccessareasearch']
 
     for key in int_keys:
         cfg[key] = int(cfg.get(key, 0))
@@ -94,9 +121,6 @@ def load_config(config_path=CONFIG_FILE):
         cfg[key] = float(cfg.get(key, 0.0))
     for key in bool_keys:
         cfg[key] = cfg.get(key, 'false').lower() in ('true', '1', 'yes')
-
-    # 新增: 解析字符串路径
-    cfg['screenshotsavepath'] = cfg.get('screenshotsavepath', 'screenshots')
 
     # 解析区域截图坐标
     for area_type in ['stuck', 'success']:
@@ -144,11 +168,10 @@ def get_process_count(process_name):
         logging.error(f"检查进程数时出错: {e}")
         return -1  # -1 表示检查失败
 
-def find_stuck_template(template_path, threshold, bbox=None, config=None):
+def find_stuck_template(template_path, threshold, bbox=None):
     """
     【重量级操作】专门用于寻找单个“卡住”模板。
     使用彩色图像匹配，返回 (是否找到, 第一个匹配项的中心点坐标)。
-    如果配置中启用，当找到模板时会保存截图。
     """
     try:
         if not os.path.exists(template_path): return False, None
@@ -166,18 +189,6 @@ def find_stuck_template(template_path, threshold, bbox=None, config=None):
         logging.info(f"查找'卡住'模板: 最大相似度 {max_val:.4f} (阈值: {threshold})")
 
         if max_val >= threshold:
-            # 新增: 当找到模板时，根据配置保存截图
-            if config and config.get('savestuckscreenshot'):
-                save_path = config.get('screenshotsavepath', 'screenshots')
-                try:
-                    os.makedirs(save_path, exist_ok=True)
-                    timestamp = time.strftime('%Y%m%d_%H%M%S')
-                    filename = os.path.join(save_path, f"stuck_snapshot_{timestamp}.png")
-                    screenshot.save(filename)
-                    logging.info(f"已将'卡住'状态的截图保存至: {filename}")
-                except Exception as e:
-                    logging.error(f"保存'卡住'截图时失败: {e}")
-
             center_x = max_loc[0] + w // 2
             center_y = max_loc[1] + h // 2
             if bbox:
@@ -253,13 +264,7 @@ def handle_alert_state(config):
             return
 
         # 2. 如果未恢复，则寻找“卡住”模板并尝试点击
-        # 修改: 传递完整的 config 字典
-        is_stuck, stuck_location = find_stuck_template(
-            config['templatestuckimagename'], 
-            config['stucktemplatethreshold'], 
-            config.get('stucksearchareabbox'),
-            config=config
-        )
+        is_stuck, stuck_location = find_stuck_template(config['templatestuckimagename'], config['stucktemplatethreshold'], config.get('stucksearchareabbox'))
         if is_stuck:
             logging.warning("诊断中发现'卡住'标志，准备点击。")
             if config.get('enableclick', False) and stuck_location:
@@ -331,3 +336,93 @@ def main_loop():
 
 if __name__ == '__main__':
     main_loop()
+```
+```config.ini
+[Settings]
+# =================================================
+# --- 基本监控目标配置 ---
+# =================================================
+
+# 【必需】要监控的游戏进程名，必须带 .exe 后缀
+ProcessName = Game.exe
+
+# 【必需】健康状态下，应有的进程数量
+RequiredProcessCount = 6
+
+
+# =================================================
+# --- 状态模板配置 ---
+# =================================================
+
+# 【必需】用于识别“卡住/掉线”状态的模板图片文件名
+TemplateStuckImageName = template_stuck.png
+
+# “卡住”模板的匹配阈值 (0.0到1.0的小数)。值越高越严格。建议 0.8
+StuckTemplateThreshold = 0.8
+
+# 【必需】用于识别“成功/健康”状态的模板图片文件名 (例如关闭按钮X的图标)
+TemplateSuccessImageName = template_close_button.png
+
+# “成功”模板的匹配阈值。图标类模板通常可以设置得更高以求精确。建议 0.8 或 0.9
+SuccessTemplateThreshold = 0.8
+
+# 【必需】屏幕上应找到多少个“成功”模板才算真正恢复正常
+RequiredSuccessCount = 6
+
+
+# =================================================
+# --- 循环与超时控制 ---
+# =================================================
+
+# 【必需】网络共享文件夹的路径，用于存放告警日志文件
+AlertSharePath = \\192.168.3.3\002 云主机游戏必备\info
+
+# 主循环的间隔时间（秒）。即每隔多少秒进行一次轻量级的进程数检查。
+LoopInterval = 30
+
+# 在“重量级诊断”模式下的总超时时间（秒）。超过这个时间未能解决问题，则放弃本次纠正。
+TimeoutSeconds = 300
+
+
+# =================================================
+# --- 高级性能与区域选项 ---
+# =================================================
+
+# 是否为“卡住”模板启用区域搜索 (1 = 开启, 0 = 关闭)。
+# 如果卡住的界面位置固定，开启此项可提升性能。
+EnableStuckAreaSearch = 0
+
+# 如果开启，请设置“卡住”模板的搜索区域 (左, 上, 右, 下)。
+StuckSearchAreaBbox = 0,0,1920,1080
+
+# 是否为“成功X”模板启用区域搜索 (1 = 开启, 0 = 关闭)。
+# 【强烈建议开启】以排除屏幕其他区域的干扰。
+EnableSuccessAreaSearch = 1
+
+# 如果开启，请设置“成功X”模板的搜索区域 (左, 上, 右, 下)。
+# 使用 test_find_x.py 脚本来帮助你获取这个值。
+SuccessSearchAreaBbox = 700, 0, 960, 400
+
+
+
+
+
+[ClickAction]
+# =================================================
+# --- 自动点击操作配置 ---
+# =================================================
+
+# 是否在找到“卡住”模板后，执行自动点击操作 (1 = 开启, 0 = 关闭)
+EnableClick = 1
+
+# 点击位置的X轴偏移量，相对于找到的“卡住”模板图片的【中心点】
+ClickOffsetX = 0
+
+# 点击位置的Y轴偏移量，相对于找到的“卡住”模板图片的【中心点】
+ClickOffsetY = 0
+
+# 在诊断模式中，每次点击后，等待多少秒再进行下一次检查，给游戏响应时间。
+ClickRetryDelay = 10
+```
+## 修改方案：
+在config里添加一个控制参数，支持当检测到“卡住”模板后，截图保持到目录
