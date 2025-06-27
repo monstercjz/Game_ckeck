@@ -91,7 +91,7 @@ def load_config(config_path=CONFIG_FILE):
         ValueError: 如果配置项格式不正确。
     """
     config = configparser.ConfigParser()
-    if not config.read(config_path, encoding='utf-8'):
+    if not config.read(config_path, encoding='utf-8-sig'):
         raise FileNotFoundError(f"配置文件 '{config_path}' 未找到！")
     
     raw_cfg = {}
