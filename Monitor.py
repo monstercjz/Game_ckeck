@@ -342,12 +342,12 @@ def main_loop():
                 if last_status_is_normal is False:
                     logging.info(f"状态已恢复正常 (进程数: {proc_count})。")
                 # 如果状态一直是正常的 (last_status_is_normal is True or None)，则不记录任何日志
-            else: # 状态异常
+            else:  # 状态异常
                 if last_status_is_normal is not False: # 首次发现异常或从正常转为异常
                     logging.warning(f"状态异常 (进程数: {proc_count})，启动完整的诊断和纠正流程...")
-                else: # 持续异常，仅在DEBUG模式下提示
+                else:  # 持续异常，仅在DEBUG模式下提示
                     logging.debug(f"状态持续异常 (进程数: {proc_count})，仍在诊断中...")
-                
+                time.sleep(45)  # 如果状态异常，休眠60秒后重试
                 handle_alert_state(config)
             
             # 更新状态
