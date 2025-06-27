@@ -19,8 +19,9 @@ import os
 import socket
 import configparser
 import logging
+import logging.handlers # 新增: 用于日志滚动
 import pyautogui
-import sys # 新增: 用于路径解析
+import sys
 
 # --- 路径解析辅助函数 ---
 def resource_path(relative_path):
@@ -33,7 +34,6 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 # --- 全局常量定义 ---
-# 修改: 使用 resource_path 定位配置文件
 CONFIG_FILE = resource_path('config.ini')
 LOG_FILE = 'monitor.log'
 LOG_MAX_SIZE_MB = 5  # 日志文件最大体积（MB）
@@ -45,27 +45,35 @@ LOG_MAX_SIZE_MB = 5  # 日志文件最大体积（MB）
 def setup_logging():
     """
     配置日志系统。
-    - 日志级别: INFO
+    - 日志级别: INFO (可根据需要调整为 DEBUG)
     - 格式: 时间 - 级别 - 消息
     - 输出: 同时输出到控制台和 LOG_FILE
-    - 日志滚动: 当日志文件超过 LOG_MAX_SIZE_MB 时，清空文件。
+    - 日志滚动: 使用 RotatingFileHandler，单个文件最大5MB，保留5个备份。
     """
-    log_max_bytes = LOG_MAX_SIZE_MB * 1024 * 1024
-    try:
-        if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > log_max_bytes:
-            os.remove(LOG_FILE)
-            print(f"提示: 日志文件 '{LOG_FILE}' 已超过 {LOG_MAX_SIZE_MB}MB，已清空。")
-    except OSError as e:
-        print(f"提示: 无法处理日志文件 '{LOG_FILE}': {e}")
+    # 获取根日志记录器
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO) # 默认级别，只记录INFO及以上。调试时可改为 logging.DEBUG
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(LOG_FILE, encoding='utf-8', mode='a'),
-            logging.StreamHandler()
-        ]
+    # 创建格式化器
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+    # 创建控制台处理器
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    
+    # 创建带轮换的文件处理器
+    # 单个文件最大 LOG_MAX_SIZE_MB，保留5个备份文件 (monitor.log, monitor.log.1, ...)
+    log_max_bytes = LOG_MAX_SIZE_MB * 1024 * 1024
+    file_handler = logging.handlers.RotatingFileHandler(
+        LOG_FILE, maxBytes=log_max_bytes, backupCount=5, encoding='utf-8'
     )
+    file_handler.setFormatter(formatter)
+
+    # 清除任何可能已存在的处理器，然后添加新的
+    if logger.hasHandlers():
+        logger.handlers.clear()
+    logger.addHandler(stream_handler)
+    logger.addHandler(file_handler)
 
 def load_config(config_path=CONFIG_FILE):
     """
@@ -109,7 +117,7 @@ def load_config(config_path=CONFIG_FILE):
     # 解析字符串路径
     cfg['screenshotsavepath'] = cfg.get('screenshotsavepath', 'screenshots')
 
-    # 修改: 对模板图片路径使用 resource_path 进行转换
+    # 对模板图片路径使用 resource_path 进行转换
     cfg['templatestuckimagename'] = resource_path(cfg.get('templatestuckimagename', ''))
     cfg['templatesuccessimagename'] = resource_path(cfg.get('templatesuccessimagename', ''))
     
@@ -178,7 +186,8 @@ def find_stuck_template(template_path, threshold, bbox=None, config=None):
         res = cv2.matchTemplate(main_image, template_image, cv2.TM_CCOEFF_NORMED)
         _, max_val, _, max_loc = cv2.minMaxLoc(res)
 
-        logging.info(f"查找'卡住'模板: 最大相似度 {max_val:.4f} (阈值: {threshold})")
+        # 日志级别从 INFO 调整为 DEBUG
+        logging.debug(f"查找'卡住'模板: 最大相似度 {max_val:.4f} (阈值: {threshold})")
 
         if max_val >= threshold:
             # 当找到模板时，根据配置保存截图
@@ -261,7 +270,7 @@ def handle_alert_state(config):
         proc_count = get_process_count(config['processname'])
         success_icon_count = count_success_templates(config['templatesuccessimagename'], config['successtemplatethreshold'], config.get('successsearchareabbox'))
         
-        logging.info(f"诊断中 - 进程数: {proc_count}/{config['requiredprocesscount']}, 成功标志: {success_icon_count}/{config['requiredsuccesscount']}")
+        logging.debug(f"诊断中 - 进程数: {proc_count}/{config['requiredprocesscount']}, 成功标志: {success_icon_count}/{config['requiredsuccesscount']}")
         
         if proc_count == config['requiredprocesscount'] and success_icon_count >= config['requiredsuccesscount']:
             logging.info("成功！诊断中发现系统已完全恢复健康，退出诊断流程。")
@@ -288,7 +297,8 @@ def handle_alert_state(config):
             logging.info(f"等待 {config['clickretrydelay']} 秒后再次检查...")
             time.sleep(config['clickretrydelay'])
         else:
-            logging.info("未找到已知'卡住'标志，等待5秒观察变化...")
+            # 日志级别从 INFO 调整为 DEBUG
+            logging.debug("未找到已知'卡住'标志，等待5秒观察变化...")
             time.sleep(5)
     
     # 3. 如果循环是因为超时而结束
@@ -307,7 +317,7 @@ def handle_alert_state(config):
 def main_loop():
     """
     主循环，程序的总指挥。
-    逻辑已简化：只负责“放哨”，如果发现不健康，则无条件调用专家函数 `handle_alert_state`。
+    实现了状态变更日志记录，仅在状态切换时记录日志。
     """
     setup_logging()
     try:
@@ -318,20 +328,33 @@ def main_loop():
     
     logging.info("监控程序已启动，进入主循环...")
     
+    # 用于状态变更检测的变量
+    last_status_is_normal = None 
+
     while True:
         try:
             # 1. 轻量级检查：只检查进程数
             proc_count = get_process_count(config['processname'])
-            
-            # 2. 判断是否需要深入检查
-            if proc_count == config['requiredprocesscount']:
-                logging.info(f"状态正常 (进程数: {proc_count})。")
-            else:
-                logging.warning(f"状态异常 (进程数: {proc_count})，启动完整的诊断和纠正流程...")
+            current_status_is_normal = (proc_count == config['requiredprocesscount'])
+
+            # 2. 实现状态变更日志记录
+            if current_status_is_normal:
+                if last_status_is_normal is False:
+                    logging.info(f"状态已恢复正常 (进程数: {proc_count})。")
+                # 如果状态一直是正常的 (last_status_is_normal is True or None)，则不记录任何日志
+            else: # 状态异常
+                if last_status_is_normal is not False: # 首次发现异常或从正常转为异常
+                    logging.warning(f"状态异常 (进程数: {proc_count})，启动完整的诊断和纠正流程...")
+                else: # 持续异常，仅在DEBUG模式下提示
+                    logging.debug(f"状态持续异常 (进程数: {proc_count})，仍在诊断中...")
+                
                 handle_alert_state(config)
             
+            # 更新状态
+            last_status_is_normal = current_status_is_normal
+
             # 3. 主循环休眠
-            logging.info(f"--- 本轮结束，休眠 {config['loopinterval']} 秒 ---\n")
+            logging.debug(f"--- 本轮结束，休眠 {config['loopinterval']} 秒 ---") # 休眠日志也降为DEBUG
             time.sleep(config['loopinterval'])
 
         except KeyboardInterrupt:
