@@ -99,13 +99,17 @@ def load_config(config_path=CONFIG_FILE):
         raw_cfg.update(config['Settings'].items())
     if 'ClickAction' in config:
         raw_cfg.update(config['ClickAction'].items())
+    if 'LoginScreenCheck' in config:
+        raw_cfg.update(config['LoginScreenCheck'].items())
         
     cfg = {k.lower(): v for k, v in raw_cfg.items()}
 
     # 类型转换，带默认值以增加健壮性
-    int_keys = ['requiredprocesscount', 'requiredsuccesscount', 'loopinterval', 'timeoutseconds', 'clickoffsetx', 'clickoffsety', 'clickretrydelay']
-    float_keys = ['stucktemplatethreshold', 'successtemplatethreshold']
-    bool_keys = ['enableclick', 'enablestuckareasearch', 'enablesuccessareasearch', 'savestuckscreenshot']
+    # 修改: 移除了 loginclickoffsetx/y，增加了 loginclickdelay
+    int_keys = ['requiredprocesscount', 'requiredsuccesscount', 'loopinterval', 'timeoutseconds', 'clickoffsetx', 'clickoffsety', 'clickretrydelay', 'loginclickdelay']
+    # 修改: 增加了 minimizebuttontemplatethreshold
+    float_keys = ['stucktemplatethreshold', 'successtemplatethreshold', 'logintemplatethreshold', 'minimizebuttontemplatethreshold']
+    bool_keys = ['enableclick', 'enablestuckareasearch', 'enablesuccessareasearch', 'savestuckscreenshot', 'enableloginscreencheck']
 
     for key in int_keys:
         cfg[key] = int(cfg.get(key, 0))
@@ -117,26 +121,30 @@ def load_config(config_path=CONFIG_FILE):
     # 解析字符串路径
     cfg['screenshotsavepath'] = cfg.get('screenshotsavepath', 'screenshots')
 
-    # 修改: 解析逗号分隔的“卡住”模板列表，并对每个路径应用 resource_path
+    # 解析模板路径
     stuck_templates_str = cfg.get('templatestuckimagenames', '')
     cfg['templatestuckimagenames'] = [resource_path(item.strip()) for item in stuck_templates_str.split(',') if item.strip()]
-
-    # 对“成功”模板图片路径使用 resource_path 进行转换
     cfg['templatesuccessimagename'] = resource_path(cfg.get('templatesuccessimagename', ''))
+    cfg['templateloginimagename'] = resource_path(cfg.get('templateloginimagename', ''))
+    # 新增: 解析最小化按钮模板路径
+    cfg['templateminimizebuttonimagename'] = resource_path(cfg.get('templateminimizebuttonimagename', ''))
     
     # 解析区域截图坐标
-    for area_type in ['stuck', 'success']:
+    for area_type in ['stuck', 'success', 'login']:
         enable_key = f'enable{area_type}areasearch'
-        bbox_key = f'{area_type}searchareabbox'
-        if cfg.get(enable_key):
+        if area_type == 'login' or cfg.get(enable_key):
+            bbox_key = f'{area_type}searchareabbox'
             try:
-                bbox_str = cfg.get(bbox_key, '0,0,0,0')
-                cfg[bbox_key] = tuple(map(int, bbox_str.split(',')))
-            except ValueError:
-                logging.warning(f"配置项 '{bbox_key}' 格式错误，将对 {area_type} 模板使用全屏搜索。")
+                bbox_str = cfg.get(bbox_key)
+                if bbox_str:
+                    cfg[bbox_key] = tuple(map(int, bbox_str.split(',')))
+                else:
+                    cfg[bbox_key] = None
+            except (ValueError, TypeError):
+                logging.warning(f"配置项 '{bbox_key}' 格式错误或不存在，将对 {area_type} 模板使用全屏搜索。")
                 cfg[bbox_key] = None
         else:
-            cfg[bbox_key] = None
+            cfg[f'{area_type}searchareabbox'] = None
             
     return cfg
 
@@ -170,6 +178,60 @@ def get_process_count(process_name):
     except Exception as e:
         logging.error(f"检查进程数时出错: {e}")
         return -1  # -1 表示检查失败
+
+
+def check_and_handle_login_screen(config):
+    """
+    独立的登录界面检测和处理器 (两阶段搜索)。
+    阶段一: 查找登录界面标志。
+    阶段二: 如果找到，则查找最小化按钮并点击。
+    """
+    
+    if not config.get('enableloginscreencheck', False):
+        return False
+    
+    # --- 阶段一: 查找登录界面标志 ---
+    login_template_path = config.get('templateloginimagename')
+    login_threshold = config.get('logintemplatethreshold', 0.8)
+    search_bbox = config.get('loginsearchareabbox')
+    
+    if not login_template_path:
+        return False
+        
+    is_login_screen_found, _ = find_stuck_template([login_template_path], login_threshold, search_bbox)
+
+    if not is_login_screen_found:
+        return False # 未找到登录界面，流程结束
+
+    logging.info("阶段一成功: 检测到登录界面标志。")
+
+    # --- 阶段二: 查找最小化按钮 ---
+    minimize_template_path = config.get('templateminimizebuttonimagename')
+    minimize_threshold = config.get('minimizebuttontemplatethreshold', 0.9)
+
+    if not minimize_template_path:
+        logging.warning("已配置检查登录界面，但未配置最小化按钮模板。")
+        return False
+
+    is_minimize_btn_found, btn_location = find_stuck_template([minimize_template_path], minimize_threshold, search_bbox)
+
+    if is_minimize_btn_found:
+        logging.info("阶段二成功: 找到最小化按钮，准备点击。")
+        try:
+            # 直接点击找到的按钮中心，无偏移
+            pyautogui.click(btn_location[0], btn_location[1])
+            
+            delay = config.get('loginclickdelay', 5)
+            logging.info(f"点击完成，等待 {delay} 秒以响应...")
+            time.sleep(delay)
+            return True # 表示已成功处理
+        except Exception as e:
+            logging.error(f"执行最小化按钮点击时失败: {e}")
+    else:
+        logging.warning("已找到登录界面标志，但在指定区域内未能找到最小化按钮。")
+
+    return False
+
 
 def find_stuck_template(template_paths, threshold, bbox=None, config=None):
     """
@@ -255,6 +317,7 @@ def count_success_templates(template_path, threshold, bbox=None):
 # --- 3. 诊断与操作逻辑模块 ---
 # ==============================================================================
 
+
 def handle_alert_state(config):
     """
     【重量级诊断与纠正】
@@ -288,7 +351,10 @@ def handle_alert_state(config):
             logging.info("成功！诊断中发现系统已完全恢复健康，退出诊断流程。")
             return
 
-        # 2. 如果未恢复，则寻找“卡住”模板并尝试点击
+        # 2. 优先处理特定的登录界面场景 (作为附加动作，不中断流程)
+        check_and_handle_login_screen(config)
+        
+        # 3. 如果未恢复，则继续寻找通用的“卡住”模板并尝试点击
         is_stuck, stuck_location = find_stuck_template(
             config['templatestuckimagenames'], 
             config['stucktemplatethreshold'], 
@@ -296,7 +362,7 @@ def handle_alert_state(config):
             config=config
         )
         if is_stuck:
-            logging.warning("诊断中发现'卡住'标志，准备点击。")
+            logging.warning("诊断中发现通用'卡住'标志，准备点击。")
             if config.get('enableclick', False) and stuck_location:
                 try:
                     click_x = stuck_location[0] + config.get('clickoffsetx', 0)
@@ -309,11 +375,10 @@ def handle_alert_state(config):
             logging.info(f"等待 {config['clickretrydelay']} 秒后再次检查...")
             time.sleep(config['clickretrydelay'])
         else:
-            # 日志级别从 INFO 调整为 DEBUG
-            logging.debug("未找到已知'卡住'标志，等待5秒观察变化...")
+            logging.debug("未找到已知'卡住'或'登录'标志，等待5秒观察变化...")
             time.sleep(5)
     
-    # 3. 如果循环是因为超时而结束
+    # 4. 如果循环是因为超时而结束
     logging.error(f"诊断超时（{timeout_seconds}秒），未能解决问题。")
     final_fail_message = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] - IP: {local_ip} - 自动纠正超时，问题仍未解决。"
     try:
@@ -321,6 +386,7 @@ def handle_alert_state(config):
             f.write(final_fail_message + "\n")
     except Exception as e:
         logging.error(f"写入超时日志时失败: {e}")
+
 
 # ==============================================================================
 # --- 4. 主程序入口与循环 ---
