@@ -117,8 +117,11 @@ def load_config(config_path=CONFIG_FILE):
     # 解析字符串路径
     cfg['screenshotsavepath'] = cfg.get('screenshotsavepath', 'screenshots')
 
-    # 对模板图片路径使用 resource_path 进行转换
-    cfg['templatestuckimagename'] = resource_path(cfg.get('templatestuckimagename', ''))
+    # 修改: 解析逗号分隔的“卡住”模板列表，并对每个路径应用 resource_path
+    stuck_templates_str = cfg.get('templatestuckimagenames', '')
+    cfg['templatestuckimagenames'] = [resource_path(item.strip()) for item in stuck_templates_str.split(',') if item.strip()]
+
+    # 对“成功”模板图片路径使用 resource_path 进行转换
     cfg['templatesuccessimagename'] = resource_path(cfg.get('templatesuccessimagename', ''))
     
     # 解析区域截图坐标
@@ -136,6 +139,7 @@ def load_config(config_path=CONFIG_FILE):
             cfg[bbox_key] = None
             
     return cfg
+
 
 # ==============================================================================
 # --- 2. 系统与图像识别核心功能模块 ---
@@ -167,50 +171,58 @@ def get_process_count(process_name):
         logging.error(f"检查进程数时出错: {e}")
         return -1  # -1 表示检查失败
 
-def find_stuck_template(template_path, threshold, bbox=None, config=None):
+def find_stuck_template(template_paths, threshold, bbox=None, config=None):
     """
-    【重量级操作】专门用于寻找单个“卡住”模板。
-    使用彩色图像匹配，返回 (是否找到, 第一个匹配项的中心点坐标)。
-    如果配置中启用，当找到模板时会保存截图。
+    【重量级操作】依次查找多个“卡住”模板中的任意一个。
+    只要有一个匹配成功，就立即返回。
     """
     try:
-        if not os.path.exists(template_path): return False, None
-        
         screenshot = ImageGrab.grab(bbox=bbox)
         main_image = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
-        template_image = cv2.imread(template_path)
-        
-        if template_image is None: logging.error(f"无法读取模板 '{template_path}'"); return False, None
-        
-        h, w = template_image.shape[:2]
-        res = cv2.matchTemplate(main_image, template_image, cv2.TM_CCOEFF_NORMED)
-        _, max_val, _, max_loc = cv2.minMaxLoc(res)
 
-        # 日志级别从 INFO 调整为 DEBUG
-        logging.debug(f"查找'卡住'模板: 最大相似度 {max_val:.4f} (阈值: {threshold})")
+        for template_path in template_paths:
+            if not os.path.exists(template_path):
+                logging.warning(f"模板文件不存在，跳过: {template_path}")
+                continue
+            
+            template_image = cv2.imread(template_path)
+            if template_image is None:
+                logging.error(f"无法读取模板 '{template_path}'，跳过。")
+                continue
+            
+            h, w = template_image.shape[:2]
+            res = cv2.matchTemplate(main_image, template_image, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(res)
 
-        if max_val >= threshold:
-            # 当找到模板时，根据配置保存截图
-            if config and config.get('savestuckscreenshot'):
-                save_path = config.get('screenshotsavepath', 'screenshots')
-                try:
-                    os.makedirs(save_path, exist_ok=True)
-                    timestamp = time.strftime('%Y%m%d_%H%M%S')
-                    filename = os.path.join(save_path, f"stuck_snapshot_{timestamp}.png")
-                    screenshot.save(filename)
-                    logging.info(f"已将'卡住'状态的截图保存至: {filename}")
-                except Exception as e:
-                    logging.error(f"保存'卡住'截图时失败: {e}")
+            logging.debug(f"查找模板 '{os.path.basename(template_path)}': 最大相似度 {max_val:.4f} (阈值: {threshold})")
 
-            center_x = max_loc[0] + w // 2
-            center_y = max_loc[1] + h // 2
-            if bbox:
-                center_x += bbox[0]
-                center_y += bbox[1]
-            return True, (center_x, center_y)
-        return False, None
+            if max_val >= threshold:
+                logging.info(f"成功匹配到'卡住'模板: '{os.path.basename(template_path)}' (相似度: {max_val:.4f})")
+                
+                # 当找到模板时，根据配置保存截图
+                if config and config.get('savestuckscreenshot'):
+                    save_path = config.get('screenshotsavepath', 'screenshots')
+                    try:
+                        os.makedirs(save_path, exist_ok=True)
+                        timestamp = time.strftime('%Y%m%d_%H%M%S')
+                        filename = os.path.join(save_path, f"stuck_snapshot_{timestamp}.png")
+                        screenshot.save(filename)
+                        logging.info(f"已将'卡住'状态的截图保存至: {filename}")
+                    except Exception as e:
+                        logging.error(f"保存'卡住'截图时失败: {e}")
+
+                center_x = max_loc[0] + w // 2
+                center_y = max_loc[1] + h // 2
+                if bbox:
+                    center_x += bbox[0]
+                    center_y += bbox[1]
+                return True, (center_x, center_y) # 立即返回
+
+        return False, None # 所有模板都未匹配
     except Exception as e:
-        logging.error(f"查找'卡住'模板时出错: {e}"); return False, None
+        logging.error(f"查找'卡住'模板时出错: {e}")
+        return False, None
+
 
 def count_success_templates(template_path, threshold, bbox=None):
     """
@@ -278,7 +290,7 @@ def handle_alert_state(config):
 
         # 2. 如果未恢复，则寻找“卡住”模板并尝试点击
         is_stuck, stuck_location = find_stuck_template(
-            config['templatestuckimagename'], 
+            config['templatestuckimagenames'], 
             config['stucktemplatethreshold'], 
             config.get('stucksearchareabbox'),
             config=config
