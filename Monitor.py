@@ -203,7 +203,7 @@ def check_and_handle_login_screen(config):
     if not is_login_screen_found:
         return False # 未找到登录界面，流程结束
 
-    logging.info("阶段一成功: 检测到登录界面标志。")
+    logging.debug("阶段一成功: 检测到登录界面标志。")
 
     # --- 阶段二: 查找最小化按钮 ---
     minimize_template_path = config.get('templateminimizebuttonimagename')
@@ -216,7 +216,7 @@ def check_and_handle_login_screen(config):
     is_minimize_btn_found, btn_location = find_stuck_template([minimize_template_path], minimize_threshold, search_bbox)
 
     if is_minimize_btn_found:
-        logging.info("阶段二成功: 找到最小化按钮，准备点击。")
+        logging.debug("阶段二成功: 找到最小化按钮，准备点击。")
         try:
             # 直接点击找到的按钮中心，无偏移
             pyautogui.click(btn_location[0], btn_location[1])
@@ -352,8 +352,12 @@ def handle_alert_state(config):
             return
 
         # 2. 优先处理特定的登录界面场景 (作为附加动作，不中断流程)
-        check_and_handle_login_screen(config)
-        
+        # check_and_handle_login_screen(config)
+        action_taken = check_and_handle_login_screen(config)
+        if action_taken:
+            logging.debug("已处理登录界面，将重新评估系统状态。")
+            continue  # 跳过本轮后续检查，直接开始新一轮循环
+
         # 3. 如果未恢复，则继续寻找通用的“卡住”模板并尝试点击
         is_stuck, stuck_location = find_stuck_template(
             config['templatestuckimagenames'], 
