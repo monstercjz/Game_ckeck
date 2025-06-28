@@ -22,8 +22,11 @@ import logging
 import logging.handlers # 新增: 用于日志滚动
 import pyautogui
 import sys
+import requests
 
 # --- 路径解析辅助函数 ---
+
+
 def resource_path(relative_path):
     """ 获取资源的绝对路径, 兼容开发模式和 PyInstaller 打包后的模式 """
     try:
@@ -34,6 +37,8 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 # --- 全局常量定义 ---
+
+
 CONFIG_FILE = resource_path('config.ini')
 LOG_FILE = 'monitor.log'
 LOG_MAX_SIZE_MB = 5  # 日志文件最大体积（MB）
@@ -41,6 +46,7 @@ LOG_MAX_SIZE_MB = 5  # 日志文件最大体积（MB）
 # ==============================================================================
 # --- 1. 初始化与配置模块 ---
 # ==============================================================================
+
 
 def setup_logging():
     """
@@ -75,6 +81,7 @@ def setup_logging():
     logger.addHandler(stream_handler)
     logger.addHandler(file_handler)
 
+
 def load_config(config_path=CONFIG_FILE):
     """
     从指定的 .ini 文件加载所有配置，并进行类型转换。
@@ -101,15 +108,16 @@ def load_config(config_path=CONFIG_FILE):
         raw_cfg.update(config['ClickAction'].items())
     if 'LoginScreenCheck' in config:
         raw_cfg.update(config['LoginScreenCheck'].items())
+    # 新增: 读取 [Notification] 节
+    if 'Notification' in config:
+        raw_cfg.update(config['Notification'].items())
         
     cfg = {k.lower(): v for k, v in raw_cfg.items()}
 
     # 类型转换，带默认值以增加健壮性
-    # 修改: 移除了 loginclickoffsetx/y，增加了 loginclickdelay
     int_keys = ['requiredprocesscount', 'requiredsuccesscount', 'loopinterval', 'timeoutseconds', 'clickoffsetx', 'clickoffsety', 'clickretrydelay', 'loginclickdelay']
-    # 修改: 增加了 minimizebuttontemplatethreshold
     float_keys = ['stucktemplatethreshold', 'successtemplatethreshold', 'logintemplatethreshold', 'minimizebuttontemplatethreshold']
-    bool_keys = ['enableclick', 'enablestuckareasearch', 'enablesuccessareasearch', 'savestuckscreenshot', 'enableloginscreencheck']
+    bool_keys = ['enableclick', 'enablestuckareasearch', 'enablesuccessareasearch', 'savestuckscreenshot', 'enableloginscreencheck', 'enablewebhooknotification']
 
     for key in int_keys:
         cfg[key] = int(cfg.get(key, 0))
@@ -120,13 +128,14 @@ def load_config(config_path=CONFIG_FILE):
 
     # 解析字符串路径
     cfg['screenshotsavepath'] = cfg.get('screenshotsavepath', 'screenshots')
+    # 新增: 解析 Webhook URL，如果未配置则默认为空字符串
+    cfg['webhookurl'] = cfg.get('webhookurl', '')
 
     # 解析模板路径
     stuck_templates_str = cfg.get('templatestuckimagenames', '')
     cfg['templatestuckimagenames'] = [resource_path(item.strip()) for item in stuck_templates_str.split(',') if item.strip()]
     cfg['templatesuccessimagename'] = resource_path(cfg.get('templatesuccessimagename', ''))
     cfg['templateloginimagename'] = resource_path(cfg.get('templateloginimagename', ''))
-    # 新增: 解析最小化按钮模板路径
     cfg['templateminimizebuttonimagename'] = resource_path(cfg.get('templateminimizebuttonimagename', ''))
     
     # 解析区域截图坐标
@@ -153,6 +162,32 @@ def load_config(config_path=CONFIG_FILE):
 # --- 2. 系统与图像识别核心功能模块 ---
 # ==============================================================================
 
+def send_webhook_notification(config, alert_type, message):
+    """通过Webhook发送结构化的JSON告警。"""
+    # 新增: 守卫子句，检查通知是否已全局启用
+    if not config.get('enablewebhooknotification', False):
+        return
+
+    url = config.get('webhookurl')
+    if not url:
+        logging.debug("Webhook URL未配置，跳过通知。")
+        return
+
+    payload = {
+        "ip": get_local_ip(),
+        "type": alert_type,
+        "message": message,
+        "timestamp": time.time()
+    }
+
+    try:
+        # 设置一个合理的超时时间，例如5秒
+        response = requests.post(url, json=payload, timeout=5)
+        response.raise_for_status() # 如果HTTP状态码是4xx或5xx，则抛出异常
+        logging.info(f"成功发送Webhook通知到 {url}")
+    except requests.exceptions.RequestException as e:
+        logging.error(f"发送Webhook通知失败: {e}")
+
 def get_local_ip():
     """获取本机IPv4地址，提供多种回退机制。"""
     try:
@@ -166,6 +201,7 @@ def get_local_ip():
             return socket.gethostbyname(socket.gethostname())
         except socket.gaierror:
             return "127.0.0.1" # 最终回退
+
 
 def get_process_count(process_name):
     """【轻量级操作】获取指定名称的进程数量。"""
@@ -324,21 +360,24 @@ def handle_alert_state(config):
     此函数全权负责将系统从任何异常状态恢复到最终的健康状态。
     只有在成功恢复或超时后，它才会返回。
     """
-    local_ip = get_local_ip()
-    alert_filepath = os.path.join(config['alertsharepath'], f"{local_ip}_VISUAL_HISTORY.log")
+    # local_ip = get_local_ip()
+    # alert_filepath = os.path.join(config['alertsharepath'], f"{local_ip}_VISUAL_HISTORY.log")
     
     logging.info("--- 已进入重量级诊断与纠正流程 ---")
     start_time = time.time()
     timeout_seconds = config.get('timeoutseconds', 300)
 
     # 记录进入诊断状态的日志
-    timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
-    alert_message = f"[{timestamp}] - IP: {local_ip} - 系统状态异常，开始自动纠正流程。"
-    try:
-        with open(alert_filepath, 'a', encoding='utf-8') as f:
-            f.write(alert_message + "\n")
-    except Exception as e:
-        logging.error(f"写入初始诊断日志时失败: {e}")
+    # timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+    # alert_message = f"[{timestamp}] - IP: {local_ip} - 系统状态异常，开始自动纠正流程。"
+    # try:
+    #     with open(alert_filepath, 'a', encoding='utf-8') as f:
+    #         f.write(alert_message + "\n")
+    # 用新的调用替换:
+    send_webhook_notification(config, "DIAGNOSIS_START", "系统状态异常，开始自动纠正流程。")
+
+    # except Exception as e:
+    #     logging.error(f"写入初始诊断日志时失败: {e}")
 
     while time.time() - start_time < timeout_seconds:
         # 1. 检查是否已达到最终健康状态
@@ -384,12 +423,15 @@ def handle_alert_state(config):
     
     # 4. 如果循环是因为超时而结束
     logging.error(f"诊断超时（{timeout_seconds}秒），未能解决问题。")
-    final_fail_message = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] - IP: {local_ip} - 自动纠正超时，问题仍未解决。"
-    try:
-        with open(alert_filepath, 'a', encoding='utf-8') as f:
-            f.write(final_fail_message + "\n")
-    except Exception as e:
-        logging.error(f"写入超时日志时失败: {e}")
+    # final_fail_message = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] - IP: {local_ip} - 自动纠正超时，问题仍未解决。"
+    # try:
+    #     with open(alert_filepath, 'a', encoding='utf-8') as f:
+    #         f.write(final_fail_message + "\n")
+    # 用新的调用替换:
+    send_webhook_notification(config, "DIAGNOSIS_TIMEOUT", f"诊断超时（{timeout_seconds}秒），未能解决问题。")
+
+    # except Exception as e:
+    #     logging.error(f"写入超时日志时失败: {e}")
 
 
 # ==============================================================================
