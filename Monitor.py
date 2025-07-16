@@ -23,12 +23,13 @@ import logging.handlers # 新增: 用于日志滚动
 import pyautogui
 import sys
 import requests
+import shutil
 
 # --- 路径解析辅助函数 ---
 
 
 def resource_path(relative_path):
-    """ 获取资源的绝对路径, 兼容开发模式和 PyInstaller 打包后的模式 """
+    """ 获取内部资源的绝对路径, 兼容开发模式和 PyInstaller 打包后的模式 """
     try:
         # PyInstaller 创建的临时文件夹存储在 _MEIPASS
         base_path = sys._MEIPASS
@@ -36,10 +37,71 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
+
+def get_application_path():
+    """ 获取应用程序的根目录，兼容 .py 和 .exe 模式 """
+    if getattr(sys, 'frozen', False):
+        # 如果是打包后的 .exe 文件
+        return os.path.dirname(sys.executable)
+    else:
+        # 如果是 .py 脚本
+        return os.path.dirname(os.path.abspath(__file__))
+
+
+def get_template_path(template_name):
+    """
+    获取模板图片的最终路径。
+    - 优先使用 exe 同目录下的 'templates' 文件夹中的图片。
+    - 如果不存在，则回退使用内部打包的图片。
+    """
+    if not template_name:
+        return '' # 如果模板名为空，直接返回空字符串
+
+    app_path = get_application_path()
+    # 从配置值中提取纯文件名，以防万一写成了路径
+    base_template_name = os.path.basename(template_name)
+    external_template_path = os.path.join(app_path, 'templates', base_template_name)
+
+    if os.path.exists(external_template_path):
+        logging.debug(f"检测到外部模板，将使用: {external_template_path}")
+        return external_template_path
+    else:
+        # 回退到内部资源。resource_path 已经处理了打包和开发模式
+        return resource_path(template_name)
+
+
+def find_and_prepare_config_path():
+    """
+    查找并准备配置文件。
+    - 优先使用 exe 同目录下的 config.ini。
+    - 如果不存在，则从内部复制一份默认的出来，并使用内部的启动本次。
+    """
+    app_path = get_application_path()
+    external_config_path = os.path.join(app_path, 'config.ini')
+
+    if os.path.exists(external_config_path):
+        logging.info(f"检测到外部配置文件，将使用: {external_config_path}")
+        return external_config_path
+    else:
+        logging.warning(f"未在程序目录找到外部配置文件。")
+        internal_config_path = resource_path('config.ini')
+        
+        if not os.path.exists(internal_config_path):
+            # 这是一个严重错误，意味着打包时连内部配置文件都丢了
+            logging.error("灾难性错误：连内部的默认配置文件都找不到！")
+            return None # 返回 None 来表示失败
+
+        try:
+            shutil.copy2(internal_config_path, external_config_path)
+            logging.info(f"已自动创建一份默认配置文件到: {external_config_path}")
+            logging.warning("本次运行将使用内置的默认配置，请根据需要修改外部配置文件后重启程序。")
+        except Exception as e:
+            logging.error(f"尝试创建外部配置文件时失败: {e}")
+        
+        # 无论如何，本次都使用内部配置启动
+        return internal_config_path
+
 # --- 全局常量定义 ---
-
-
-CONFIG_FILE = resource_path('config.ini')
 LOG_FILE = 'monitor.log'
 LOG_MAX_SIZE_MB = 5  # 日志文件最大体积（MB）
 
@@ -82,7 +144,7 @@ def setup_logging():
     logger.addHandler(file_handler)
 
 
-def load_config(config_path=CONFIG_FILE):
+def load_config(config_path):
     """
     从指定的 .ini 文件加载所有配置，并进行类型转换。
     强制将所有配置项的键名转换为小写，以避免因大小写不一致导致错误。
@@ -134,13 +196,15 @@ def load_config(config_path=CONFIG_FILE):
     # 新增: 解析 Webhook URL，如果未配置则默认为空字符串
     cfg['webhookurl'] = cfg.get('webhookurl', '')
 
-    # 解析模板路径
+    # 解析模板路径 (外部 'templates' 文件夹优先)
     stuck_templates_str = cfg.get('templatestuckimagenames', '')
-    cfg['templatestuckimagenames'] = [resource_path(item.strip()) for item in stuck_templates_str.split(',') if item.strip()]
-    cfg['templatesuccessimagename'] = resource_path(cfg.get('templatesuccessimagename', ''))
-    cfg['templateloginimagename'] = resource_path(cfg.get('templateloginimagename', ''))
-    cfg['templateminimizebuttonimagename'] = resource_path(cfg.get('templateminimizebuttonimagename', ''))
-    cfg['templatespecialimagename'] = resource_path(cfg.get('templatespecialimagename', ''))
+    stuck_template_names = [item.strip() for item in stuck_templates_str.split(',') if item.strip()]
+    cfg['templatestuckimagenames'] = [get_template_path(name) for name in stuck_template_names]
+
+    cfg['templatesuccessimagename'] = get_template_path(cfg.get('templatesuccessimagename', ''))
+    cfg['templateloginimagename'] = get_template_path(cfg.get('templateloginimagename', ''))
+    cfg['templateminimizebuttonimagename'] = get_template_path(cfg.get('templateminimizebuttonimagename', ''))
+    cfg['templatespecialimagename'] = get_template_path(cfg.get('templatespecialimagename', ''))
     
     # 解析区域截图坐标
     for area_type in ['stuck', 'success', 'login', 'special']:
@@ -461,10 +525,16 @@ def main_loop():
     实现了状态变更日志记录，仅在状态切换时记录日志。
     """
     setup_logging()
+    
+    config_path = find_and_prepare_config_path()
+    if not config_path:
+        logging.error("启动失败: 无法找到任何可用的配置文件。")
+        return
+
     try:
-        config = load_config()
+        config = load_config(config_path)
     except Exception as e:
-        logging.error(f"启动失败: 无法加载或解析配置 - {e}")
+        logging.error(f"启动失败: 无法加载或解析配置 '{config_path}' - {e}")
         return
     
     logging.info("监控程序已启动，进入主循环...")

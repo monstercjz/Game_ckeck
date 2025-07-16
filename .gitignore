@@ -2,4 +2,4 @@
 /stuck_screenshots
 /build
 /dist
-/monitor.spec
+*.spec
