@@ -111,13 +111,16 @@ def load_config(config_path=CONFIG_FILE):
     # 新增: 读取 [Notification] 节
     if 'Notification' in config:
         raw_cfg.update(config['Notification'].items())
+    # 新增: 读取 [SpecialSuccessCheck] 节
+    if 'SpecialSuccessCheck' in config:
+        raw_cfg.update(config['SpecialSuccessCheck'].items())
         
     cfg = {k.lower(): v for k, v in raw_cfg.items()}
 
     # 类型转换，带默认值以增加健壮性
     int_keys = ['requiredprocesscount', 'requiredsuccesscount', 'loopinterval', 'timeoutseconds', 'clickoffsetx', 'clickoffsety', 'clickretrydelay', 'loginclickdelay']
-    float_keys = ['stucktemplatethreshold', 'successtemplatethreshold', 'logintemplatethreshold', 'minimizebuttontemplatethreshold']
-    bool_keys = ['enableclick', 'enablestuckareasearch', 'enablesuccessareasearch', 'savestuckscreenshot', 'enableloginscreencheck', 'enablewebhooknotification']
+    float_keys = ['stucktemplatethreshold', 'successtemplatethreshold', 'logintemplatethreshold', 'minimizebuttontemplatethreshold', 'specialtemplatethreshold']
+    bool_keys = ['enableclick', 'enablestuckareasearch', 'enablesuccessareasearch', 'savestuckscreenshot', 'enableloginscreencheck', 'enablewebhooknotification', 'enablespecialcheck']
 
     for key in int_keys:
         cfg[key] = int(cfg.get(key, 0))
@@ -137,11 +140,13 @@ def load_config(config_path=CONFIG_FILE):
     cfg['templatesuccessimagename'] = resource_path(cfg.get('templatesuccessimagename', ''))
     cfg['templateloginimagename'] = resource_path(cfg.get('templateloginimagename', ''))
     cfg['templateminimizebuttonimagename'] = resource_path(cfg.get('templateminimizebuttonimagename', ''))
+    cfg['templatespecialimagename'] = resource_path(cfg.get('templatespecialimagename', ''))
     
     # 解析区域截图坐标
-    for area_type in ['stuck', 'success', 'login']:
+    for area_type in ['stuck', 'success', 'login', 'special']:
         enable_key = f'enable{area_type}areasearch'
-        if area_type == 'login' or cfg.get(enable_key):
+        # 'special' 区域总是需要检查，因为它依赖于自己的 'enablespecialcheck' 开关
+        if area_type == 'login' or area_type == 'special' or cfg.get(enable_key):
             bbox_key = f'{area_type}searchareabbox'
             try:
                 bbox_str = cfg.get(bbox_key)
@@ -380,18 +385,30 @@ def handle_alert_state(config):
     #     logging.error(f"写入初始诊断日志时失败: {e}")
 
     while time.time() - start_time < timeout_seconds:
-        # 1. 检查是否已达到最终健康状态
+        # 1. 检查是否已达到最终健康状态 (包含新的并行检查)
         proc_count = get_process_count(config['processname'])
         success_icon_count = count_success_templates(config['templatesuccessimagename'], config['successtemplatethreshold'], config.get('successsearchareabbox'))
         
-        logging.debug(f"诊断中 - 进程数: {proc_count}/{config['requiredprocesscount']}, 成功标志: {success_icon_count}/{config['requiredsuccesscount']}")
+        # 新增: 执行特殊成功状态检查
+        is_special_success = False
+        if config.get('enablespecialcheck'):
+            is_special_success, _ = find_stuck_template(
+                [config['templatespecialimagename']],
+                config['specialtemplatethreshold'],
+                config.get('specialsearchareabbox')
+            )
+
+        logging.debug(f"诊断中 - 进程数: {proc_count}/{config['requiredprocesscount']}, 成功标志: {success_icon_count}/{config['requiredsuccesscount']}, 特殊成功标志: {is_special_success}")
         
-        if proc_count == config['requiredprocesscount'] and success_icon_count >= config['requiredsuccesscount']:
-            logging.info("成功！诊断中发现系统已完全恢复健康，退出诊断流程。")
+        # 修改: 组合两种成功条件
+        is_normal_success = (proc_count == config['requiredprocesscount'] and success_icon_count >= config['requiredsuccesscount'])
+        is_special_case_success = (proc_count == config['requiredprocesscount'] and is_special_success)
+
+        if is_normal_success or is_special_case_success:
+            logging.info("成功！诊断中发现系统已完全恢复健康 (常规或特殊条件满足)，退出诊断流程。")
             return
 
         # 2. 优先处理特定的登录界面场景 (作为附加动作，不中断流程)
-        # check_and_handle_login_screen(config)
         action_taken = check_and_handle_login_screen(config)
         if action_taken:
             logging.debug("已处理登录界面，将重新评估系统状态。")
