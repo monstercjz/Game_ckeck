@@ -192,7 +192,10 @@ def load_config(config_path):
         cfg[key] = cfg.get(key, 'false').lower() in ('true', '1', 'yes')
 
     # 解析字符串路径
-    cfg['screenshotsavepath'] = cfg.get('screenshotsavepath', 'screenshots')
+    # 解析截图保存路径，并确保它是相对于程序根目录的绝对路径
+    save_path_relative = cfg.get('screenshotsavepath', 'screenshots')
+    app_path = get_application_path()
+    cfg['screenshotsavepath'] = os.path.join(app_path, save_path_relative)
     # 新增: 解析 Webhook URL，如果未配置则默认为空字符串
     cfg['webhookurl'] = cfg.get('webhookurl', '')
 
@@ -303,7 +306,7 @@ def check_and_handle_login_screen(config):
     if not login_template_path:
         return False
         
-    is_login_screen_found, _ = find_stuck_template([login_template_path], login_threshold, search_bbox)
+    is_login_screen_found, _ = find_stuck_template([login_template_path], login_threshold, search_bbox, config=config)
 
     if not is_login_screen_found:
         return False # 未找到登录界面，流程结束
@@ -318,7 +321,7 @@ def check_and_handle_login_screen(config):
         logging.warning("已配置检查登录界面，但未配置最小化按钮模板。")
         return False
 
-    is_minimize_btn_found, btn_location = find_stuck_template([minimize_template_path], minimize_threshold, search_bbox)
+    is_minimize_btn_found, btn_location = find_stuck_template([minimize_template_path], minimize_threshold, search_bbox, config=config)
 
     if is_minimize_btn_found:
         logging.debug("阶段二成功: 找到最小化按钮，准备点击。")
